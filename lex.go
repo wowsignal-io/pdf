@@ -7,6 +7,7 @@
 package pdf
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"strconv"
@@ -122,6 +123,10 @@ func (b *buffer) unreadByte() {
 
 func (b *buffer) unreadToken(t token) {
 	b.unread = append(b.unread, t)
+}
+
+func (b *buffer) unreadBytes(n int) {
+	b.pos -= n
 }
 
 func (b *buffer) readToken() token {
@@ -307,14 +312,39 @@ func (b *buffer) readName() token {
 
 func (b *buffer) readKeyword() token {
 	tmp := b.tmp[:0]
+	// Keep track the first delimiter encountered. We have to scan all the way
+	// to either a space or a `~>`. The latter indicates that everything we've
+	// just read has been a base85 blob (surprise!). If the base85 delim is not
+	// encountered, then we must rewind to firstDelim and resume as normal.
+	//
+	// (Base85 blobs in Postscript are only delimited from the RIGHT. There is
+	// no way to know whether we're parsing a base85 literal without scanning
+	// all the way to the next whitespace.)
+	firstDelim := -1
+	pos := 0
 	for {
 		c := b.readByte()
-		if isDelim(c) || isSpace(c) {
+		if isSpace(c) {
 			b.unreadByte()
 			break
 		}
+		if isDelim(c) {
+			firstDelim = pos
+		}
 		tmp = append(tmp, c)
+		pos++
 	}
+
+	if len(tmp) > 2 && bytes.Equal(tmp[len(tmp)-2:], []byte("~>")) {
+		// Base85-encoded string.
+		return keyword(string(tmp))
+	}
+
+	if firstDelim >= 0 {
+		b.unreadBytes(len(tmp) - firstDelim)
+		tmp = tmp[:firstDelim]
+	}
+
 	b.tmp = tmp
 	s := string(tmp)
 	switch {
